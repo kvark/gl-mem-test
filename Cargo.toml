@@ -1,0 +1,10 @@
+[package]
+name = "gl-mem-test"
+version = "0.1.0"
+authors = ["Dzmitry Malyshau <dmalyshau@mozilla.com>"]
+edition = "2018"
+
+[dependencies]
+glutin = "0.21"
+gl = "0.12"
+sysinfo = "0.8"
