@@ -1,9 +1,11 @@
 use gl;
 use glutin;
-use std::ptr;
+use std::{ptr, thread, time::Duration};
 use sysinfo::{SystemExt as _};
 
-const TEXTURE_COUNT: u32 = 10;
+const SPAWN_THREAD: bool = false;
+const DELAY_SEC: u64 = 1;
+const TEXTURE_COUNT: u32 = 100;
 const TEXTURE_SIZE: i32 = 2048;
 
 
@@ -39,57 +41,71 @@ const TESTS: &'static [Test] = &[
     Test {
         target: gl::TEXTURE_RECTANGLE,
         alloc: Allocation::Storage,
-    },
-];
+    },];
 
 fn main() {
     println!("Starting gl-mem-test with {} textures of size {}x{}",
         TEXTURE_COUNT, TEXTURE_SIZE, TEXTURE_SIZE);
     println!("\tExpected: {} MB",
         TEXTURE_COUNT as usize * (TEXTURE_SIZE * TEXTURE_SIZE) as usize * 4 >> 20);
-
-    let events_loop = glutin::EventsLoop::new();
-    let mut system = sysinfo::System::new();
-    let base = system.get_used_memory();
-    let mut texture_ids = vec![0; TEXTURE_COUNT as usize];
+    let base = sysinfo::System::new().get_used_memory();
 
     for test in TESTS {
-        let builder = glutin::WindowBuilder::new();
-        let context = glutin::ContextBuilder::new()
-            .build_windowed(builder, &events_loop)
-            .unwrap();
+        let closure = move || {
+            let events_loop = glutin::EventsLoop::new();
+            let builder = glutin::WindowBuilder::new();
+            let context = glutin::ContextBuilder::new()
+                .build_windowed(builder, &events_loop)
+                .unwrap();
 
-        let context = unsafe { context.make_current().unwrap() };
-        gl::load_with(|symbol| context.get_proc_address(symbol) as *const _);
+            let context = unsafe { context.make_current().unwrap() };
+            gl::load_with(|symbol| context.get_proc_address(symbol) as *const _);
 
-        unsafe {
-           gl::GenTextures(TEXTURE_COUNT as _, texture_ids.as_mut_ptr());
-        }
-        for &tex in &texture_ids {
+            let mut texture_ids = vec![0; TEXTURE_COUNT as usize];
             unsafe {
-                gl::BindTexture(test.target, tex);
-                match test.alloc {
-                    Allocation::Old { limit_max } => {
-                        if limit_max {
-                            gl::TexParameteri(test.target, gl::TEXTURE_MAX_LEVEL, 0);
+               gl::GenTextures(TEXTURE_COUNT as _, texture_ids.as_mut_ptr());
+            }
+
+            for &tex in &texture_ids {
+                unsafe {
+                    gl::BindTexture(test.target, tex);
+                    match test.alloc {
+                        Allocation::Old { limit_max } => {
+                            if limit_max {
+                                gl::TexParameteri(test.target, gl::TEXTURE_MAX_LEVEL, 0);
+                            }
+                            gl::TexImage2D(test.target, 0, gl::RGBA8 as _, TEXTURE_SIZE, TEXTURE_SIZE, 0, gl::RGBA, gl::UNSIGNED_BYTE, ptr::null());
                         }
-                        gl::TexImage2D(test.target, 0, gl::RGBA8 as _, TEXTURE_SIZE, TEXTURE_SIZE, 0, gl::RGBA, gl::UNSIGNED_BYTE, ptr::null());
-                    }
-                    Allocation::Storage => {
-                        gl::TexStorage2D(test.target, 1, gl::RGBA8 as _, TEXTURE_SIZE, TEXTURE_SIZE);
+                        Allocation::Storage => {
+                            gl::TexStorage2D(test.target, 1, gl::RGBA8 as _, TEXTURE_SIZE, TEXTURE_SIZE);
+                        }
                     }
                 }
             }
-        }
 
-        system.refresh_all();
-        let kb = system.get_used_memory().max(base) - base;
+            let system = sysinfo::System::new();
+            unsafe {
+                for &tex in &texture_ids {
+                    gl::BindTexture(test.target, tex);
+                    gl::TexImage2D(test.target, 0, gl::RGBA8 as _, 1, 1, 0, gl::RGBA, gl::UNSIGNED_BYTE, ptr::null());
+                }
+                gl::DeleteTextures(TEXTURE_COUNT as _, texture_ids.as_ptr());
+                gl::Finish();
+            }
+            system.get_used_memory()
+        };
+
+        let new = if SPAWN_THREAD {
+            thread::spawn(closure).join().unwrap()
+        } else {
+            closure()
+        };
+
+        let kb = new.max(base) - base;
         println!("\t{:?}: {} MB", test, kb >> 10);
-        unsafe {
-            gl::DeleteTextures(TEXTURE_COUNT as _, texture_ids.as_ptr());
-            gl::Finish();
-        }
         //context.swap_buffers().unwrap();
+
+        thread::sleep(Duration::from_millis(DELAY_SEC * 1000));
     }
 
     let err = unsafe { gl::GetError() };
